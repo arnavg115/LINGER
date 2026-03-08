@@ -1,5 +1,6 @@
 import os
 import random
+import warnings
 
 # load data
 import numpy as np
@@ -14,6 +15,7 @@ from sklearn.linear_model import ElasticNet
 from sklearn.model_selection import KFold
 from torch.nn import functional as F
 from torch.optim import Adam
+from tqdm import tqdm
 
 hidden_size = 64
 hidden_size2 = 16
@@ -242,7 +244,6 @@ def get_TSS(GRNdir, genome, TSS_dis):
     # strand.append(gene.strand)
     # chrom.append('chr'+gene.contig)
     # genesymbol.append(gene.name)
-    import pandas as pd
 
     Tssdf = pd.read_csv(GRNdir + "TSS_" + genome + ".txt", sep="\t", header=None)
     Tssdf.columns = ["chr", "TSS", "symbol", "strand"]
@@ -362,7 +363,6 @@ def sc_nn_NN(ii, RE_TGlink_temp, Target, Exp, Opn, l1_lambda, activef):
 
 
 def load_data_scNN(GRNdir, species):
-    import pandas as pd
 
     if species == "New":
         Match2 = pd.read_csv(GRNdir + "MotifMatch.txt", header=0, sep="\t")
@@ -388,16 +388,12 @@ def load_data_scNN(GRNdir, species):
 
 
 def RE_TG_dis(outdir):
-    import numpy as np
-    import pandas as pd
     import pybedtools
 
     print("Overlap the regions with gene loc ...")
-    import os  # Create the directory
 
     current_directory = os.getcwd()
     os.makedirs(outdir, exist_ok=True)
-    import pandas as pd
 
     peakList = pd.read_csv(
         current_directory + "/data/Peaks.txt", index_col=None, header=None
@@ -439,14 +435,6 @@ def RE_TG_dis(outdir):
     temp.to_csv(current_directory + "/data/RE_gene_distance.txt", sep="\t", index=None)
 
 
-import time
-import warnings
-
-import numpy as np
-import pandas as pd
-from tqdm import tqdm
-
-
 def training(GRNdir, method, outdir, activef, species):
     if method == "LINGER":
         hidden_size = 64
@@ -464,10 +452,6 @@ def training(GRNdir, method, outdir, activef, species):
         data_merge.to_csv(outdir + "data_merge.txt", sep="\t")
         chrall = ["chr" + str(i + 1) for i in range(22)]
         chrall.append("chrX")
-        import time
-        import warnings
-
-        from tqdm import tqdm
 
         for i in range(23):
             netall_s = {}
@@ -543,10 +527,6 @@ def training(GRNdir, method, outdir, activef, species):
         fisher_w = 0.1
         n_jobs = 16
         Exp, Opn, Target, RE_TGlink = load_data_scNN(GRNdir, species)
-        import time
-        import warnings
-
-        from tqdm import tqdm
 
         netall_s = {}
         shapall_s = {}
@@ -598,7 +578,6 @@ def get_TSS_ensembl(genome_short, gtf_file, GRNdir):
         strand.append(gene.strand)
         chrom.append("chr" + gene.contig)
         genesymbol.append(gene.name)
-    import pandas as pd
 
     Tssdf = pd.DataFrame(
         {"chr": chrom, "TSS": tss_positions, "symbol": genesymbol, "strand": strand}
