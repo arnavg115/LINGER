@@ -1,22 +1,23 @@
-import numpy as np
-import pandas as pd
-from scipy.sparse import coo_matrix
-from scipy.sparse import csc_matrix
-from tqdm import tqdm
-import torch
 import csv
-import torch.nn as nn
-import torch.optim as optim
-from torch.nn import functional as F
-from scipy.stats import pearsonr
-from scipy.stats import spearmanr
+import os
+
 #load data
 import random
-from torch.optim import Adam
-import os
-from sklearn.linear_model import ElasticNet
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from scipy.sparse import coo_matrix, csc_matrix
+from scipy.stats import pearsonr, spearmanr
 from sklearn.datasets import make_regression
+from sklearn.linear_model import ElasticNet
 from sklearn.model_selection import KFold
+from torch.nn import functional as F
+from torch.optim import Adam
+from tqdm import tqdm
+
 hidden_size  = 64
 hidden_size2 = 16
 output_size = 1
@@ -28,7 +29,7 @@ class Net(nn.Module):
         self.fc1 = nn.Linear(input_size, 64)
         self.fc2 = nn.Linear(64, 16)
         self.fc3 = nn.Linear(16, output_size)
-        self.activef=activef
+        self.activef = activef
     def forward(self, x):
         #x = torch.sigmoid(self.fc1(x))
         if self.activef=='ReLU':
@@ -44,14 +45,24 @@ class Net(nn.Module):
         return x
 
 def cosine_similarity_0(X):
-    A=X.T/((X**2).sum(axis=1)**(1/2)+((X**2).sum(axis=1)**(1/2)).mean()/1000000)
-    return np.dot(A.T,A)
+    norm_term = np.linalg.norm(X, axis = 1) # calculate the norm term once rather than recalculate
+    eps = norm_term.mean() / 1e6
+    A=X/(norm_term[:,np.newaxis] + eps)
+    return np.dot(A, A.T)
 
-    
+# torch norm, should be slightly faster than np
+def cosine_similarity_0_torch(X):
+    with torch.no_grad():
+        norm_term = torch.norm(X, p=2, dim=1)
+        eps = norm_term.mean() / 1e6
+        A = X / (norm_term.unsqueeze(-1) + eps)
+        return torch.mm(A, A.t())
+
+
 def list2mat(df,i_n,j_n,x_n):
     TFs = df[j_n].unique()
     REs = df[i_n].unique()
-#Initialize matrix as numpy array 
+#Initialize matrix as numpy array
 #Map row and col indices for lookup
     row_map = {r:i for i,r in enumerate(REs)}
     col_map = {c:i for i,c in enumerate(TFs)}
@@ -65,14 +76,14 @@ def list2mat(df,i_n,j_n,x_n):
 
 
 def list2mat_s(df,REs,TFs,i_n,j_n,x_n):
-#Initialize matrix as numpy array 
+#Initialize matrix as numpy array
 #Map row and col indices for lookup
     row_map = {r:i for i,r in enumerate(REs)}
     col_map = {c:i for i,c in enumerate(TFs)}
     row_indices = np.array([row_map[row] for row in df[i_n]])
     col_indices = np.array([col_map[col] for col in df[j_n]])
-    from scipy.sparse import coo_matrix
     import scipy.sparse as sp
+    from scipy.sparse import coo_matrix
     matrix = sp.csr_matrix((df[x_n], (row_indices, col_indices)), shape=(len(REs), len(TFs)))
     return matrix,REs,TFs
 
@@ -100,9 +111,9 @@ def merge_columns_in_bed_file2(file_path,startcol):
     return merged_values
 def format_RE_tran12(region):
     chr, range_ = region.split(":")
-    start, end = range_.split("-") 
+    start, end = range_.split("-")
     return "_".join([chr, start, end])
-def get_TF_RE(data_merge_temp,j,net_all,TFindex,TFName,REindex,REName):
+def get_TF_RE(data_merge_temp,j,net_all,TFindex,TFName,REindex,REName, torch_cosine = False):
     index_all=data_merge_temp[j]
     result={'TF':[],'RE':[],'score':[]}
     result = pd.DataFrame(result)
@@ -111,23 +122,29 @@ def get_TF_RE(data_merge_temp,j,net_all,TFindex,TFName,REindex,REName):
     TFidxtemp=TFindex[index_all]
     TFidxtemp=TFidxtemp.split('_')
     TFidxtemp=[int(TFidxtemp[i]) for i in range(len(TFidxtemp))]
-    TFName_temp=TFName[np.array(TFidxtemp)] 
+    TFName_temp=TFName[np.array(TFidxtemp)]
     REidxtemp=REindex[index_all]
     if REidxtemp=='':
         REidxtemp=[]
     else:
         REidxtemp=REidxtemp.split('_')
-        REidxtemp=[int(REidxtemp[i]) for i in range(len(REidxtemp))] #146 RE idx   
+        REidxtemp=[int(REidxtemp[i]) for i in range(len(REidxtemp))] #146 RE idx
     if len(REidxtemp)>0:
-        corr_matrix = cosine_similarity_0(temps.detach().numpy().T)
+        if not torch_cosine:
+            corr_matrix = cosine_similarity_0(temps.detach().numpy().T)
+        else:
+            corr_matrix = cosine_similarity_0_torch(temps.t()).detach().cpu().numpy()
         REName_temp=REName[np.array(REidxtemp)]
         corr_matrix=corr_matrix[:len(TFidxtemp),len(TFidxtemp):]
+        results = []
         for k in range(len(REidxtemp)):
             datatemp=pd.DataFrame({'score':corr_matrix[:,k].tolist()})
             datatemp['TF']=TFName_temp.tolist()
             datatemp['RE']=REName_temp[k]
-            result=pd.concat([result,datatemp])    
+            results.append(datatemp)
+    result = pd.concat(results)
     return result
+
 def load_TFbinding(GRNdir,O_overlap,O_overlap_u,O_overlap_hg19_u,chrN):
     TFbinding=pd.read_csv(GRNdir+'TF_binding_'+chrN+'.txt',sep='\t',index_col=0)
     TFbinding1=np.zeros([len(O_overlap_u),TFbinding.shape[1]])
@@ -150,7 +167,7 @@ def load_TFbinding(GRNdir,O_overlap,O_overlap_u,O_overlap_hg19_u,chrN):
     TFbinding=pd.DataFrame(TFbinding2,index=O_overlap,columns=TFbinding.columns)
     return TFbinding
 
-def load_region(GRNdir,genome,chrN,outdir):  
+def load_region(GRNdir,genome,chrN,outdir):
     O_overlap=merge_columns_in_bed_file(outdir+'Region_overlap_'+chrN+'.bed',1)
     N_overlap=merge_columns_in_bed_file(outdir+'Region_overlap_'+chrN+'.bed',4)
     O_overlap_u=list(set(O_overlap))
@@ -169,7 +186,7 @@ def load_region(GRNdir,genome,chrN,outdir):
         O_overlap_hg19_u=hg19_region.index[idx].tolist()
     return O_overlap, N_overlap,O_overlap_u,N_overlap_u,O_overlap_hg19_u
 
-def load_TF_RE(GRNdir,chrN,O_overlap,O_overlap_u,O_overlap_hg19_u):      
+def load_TF_RE(GRNdir,chrN,O_overlap,O_overlap_u,O_overlap_hg19_u):
     #print('load prior TF-RE for '+chrN+'...')
     mat=pd.read_csv(GRNdir+'Primary_TF_RE_'+chrN+'.txt',sep='\t',index_col=0)
     mat1=np.zeros([len(O_overlap_u),mat.shape[1]])
@@ -221,18 +238,22 @@ def TF_RE_LINGER_chr(chr,outdir):
     resultlist=[0 for i in range(times+1)]
     for ii in tqdm(range(times)):
         result_all=pd.DataFrame([])
+        results = []
         for j in range(ii*batchsize,(ii+1)*batchsize):
             if (AAA[j]>0)&(AAA[j]<10):
                 result=get_TF_RE(data_merge_temp,j,net_all,TFindex,TFName,REindex,REName)
-                result_all=pd.concat([result_all,result],axis=0)
+                results.append(result)
+        result_all = pd.concat(results)
         result_all=result_all.groupby(['TF', 'RE'])['score'].max().reset_index()
         resultlist[ii]=result_all
     result_all=pd.DataFrame([])
     ii=ii+1
+    results = []
     for j in range(ii*batchsize,N):
         if (AAA[j]>0)&(AAA[j]<10):
             result=get_TF_RE(data_merge_temp,j,net_all,TFindex,TFName,REindex,REName)
-            result_all=pd.concat([result_all,result],axis=0)
+            results.append(result)
+    result_all = pd.concat(results)
     if result_all.shape[0]>0:
         result_all=result_all.groupby(['TF', 'RE'])['score'].max().reset_index()
     resultlist[ii]=result_all
@@ -275,14 +296,17 @@ def TF_RE_binding_chr(adata_RNA,adata_ATAC,GRNdir,chrN,genome,outdir):
     mean_S = S.groupby(S.index).max()
     return mean_S
 import ast
-def TF_RE_scNN(TFName,geneName,net_all,RE_TGlink,REName):
+
+
+def TF_RE_scNN(TFName,geneName,net_all,RE_TGlink,REName, torch_cosine = False):
     batchsize=50
     REName=pd.DataFrame(range(len(REName)),index=REName)
     N=RE_TGlink.shape[0]
     times=int(np.floor(N/batchsize))
     resultlist=[0 for i in range(times+1)]
     for ii in range(times):
-        result_all=pd.DataFrame([])
+        # result_all=pd.DataFrame([])
+        results = []
         for j in range(ii*batchsize,(ii+1)*batchsize):
             RE_TGlink_temp=RE_TGlink.values[j,:]
             temps=list(net_all[j].parameters())[0]
@@ -291,22 +315,27 @@ def TF_RE_scNN(TFName,geneName,net_all,RE_TGlink,REName):
             TFidxtemp=np.array(range(len(TFName)))
             TFidxtemp=TFidxtemp[TFName!=RE_TGlink_temp[0]]
             if len(REidxtemp)>0:
-                corr_matrix = cosine_similarity_0(temps.detach().numpy().T)
+                if not torch_cosine:
+                    corr_matrix = cosine_similarity_0(temps.detach().numpy().T)
+                else:
+                    corr_matrix = cosine_similarity_0_torch(temps.t()).detach().cpu().numpy()
                 corr_matrix=corr_matrix[:len(TFidxtemp),len(TFidxtemp):]
-                result={'TF':[],'RE':[],'score':[]}
-                result = pd.DataFrame(result)
+                # result={'TF':[],'RE':[],'score':[]}
+                # result = pd.DataFrame(result)
+
                 for k in range(len(REidxtemp)):
                     datatemp=pd.DataFrame({'score':corr_matrix[:,k].tolist()})
                     datatemp['TF']=TFName[TFidxtemp].tolist()
                     datatemp['RE']=REidxtemp[k]
-                    result=pd.concat([result,datatemp]) 
-                result_all=pd.concat([result_all,result],axis=0)
+                    results.append(datatemp)
+        result_all=pd.concat(results,axis=0)
         result_all=result_all.groupby(['TF', 'RE'])['score'].max().reset_index()
         #print(result_all)
         resultlist[ii]=result_all
     result_all=pd.DataFrame([])
     ii=times
     if N>ii*batchsize:
+        results = []
         for j in range(ii*batchsize,N):
             RE_TGlink_temp=RE_TGlink.values[j,:]
             temps=list(net_all[j].parameters())[0]
@@ -315,29 +344,30 @@ def TF_RE_scNN(TFName,geneName,net_all,RE_TGlink,REName):
             TFidxtemp=np.array(range(len(TFName)))
             TFidxtemp=TFidxtemp[TFName!=RE_TGlink_temp[0]]
             if len(REidxtemp)>0:
-                corr_matrix = cosine_similarity_0(temps.detach().numpy().T)
+                if not torch_cosine:
+                    corr_matrix = cosine_similarity_0(temps.detach().numpy().T)
+                else:
+                    corr_matrix = cosine_similarity_0_torch(temps.t()).detach().cpu().numpy()
                 corr_matrix=corr_matrix[:len(TFidxtemp),len(TFidxtemp):]
-                result={'TF':[],'RE':[],'score':[]}
-                result = pd.DataFrame(result)
                 for k in range(len(REidxtemp)):
                     datatemp=pd.DataFrame({'score':corr_matrix[:,k].tolist()})
                     datatemp['TF']=TFName[TFidxtemp].tolist()
                     datatemp['RE']=REidxtemp[k]
-                    result=pd.concat([result,datatemp]) 
-                result_all=pd.concat([result_all,result],axis=0)
+                    results.append(datatemp)
+        result_all = pd.concat(results)
         result_all=result_all.groupby(['TF', 'RE'])['score'].max().reset_index()
     #print(result_all)
         resultlist[ii]=result_all
         result_all=pd.concat(resultlist,axis=0)
         result_all=result_all.groupby(['TF', 'RE'])['score'].max().reset_index()
     return result_all
-    
+
 def load_data_scNN(GRNdir,genome):
     import pandas as pd
     genome_map=pd.read_csv(GRNdir+'genome_map_homer.txt',sep='\t',header=0)
-    genome_map.index=genome_map['genome_short'].values 
+    genome_map.index=genome_map['genome_short'].values
     if genome in genome_map.index:
-        Match2=pd.read_csv(GRNdir+'Match_TF_motif_'+genome_map.loc[genome]['species_ensembl']+'.txt',sep='\t',header=0)  
+        Match2=pd.read_csv(GRNdir+'Match_TF_motif_'+genome_map.loc[genome]['species_ensembl']+'.txt',sep='\t',header=0)
     else:
         Match2=pd.read_csv(GRNdir+'MotifMatch.txt',sep='\t',header=0)
     TFName = pd.DataFrame(Match2['TF'].unique())
@@ -351,24 +381,25 @@ def load_data_scNN(GRNdir,genome):
     RE_TGlink.index=RE_TGlink['gene']
     RE_TGlink=RE_TGlink.loc[geneoverlap]
     RE_TGlink=RE_TGlink.reset_index(drop=True)
-    return Exp,Opn,Target,RE_TGlink  
-    
-    
-def TF_RE_binding(GRNdir,adata_RNA,adata_ATAC,genome,method,outdir):
-    from tqdm import tqdm
+    return Exp,Opn,Target,RE_TGlink
+
+
+def TF_RE_binding(GRNdir,adata_RNA,adata_ATAC,genome,method,outdir, torch_cosine = True):
     import numpy as np
     import pandas as pd
+    from tqdm import tqdm
     print('Generating cellular population TF binding strength ...')
     chrom = ['chr'+str(i+1) for i in range(22)]
     chrom.append('chrX')
-    if method=='baseline':
+    results = []
+
+    if method =='baseline':
         result=pd.DataFrame()
         for i in tqdm(range(23)):
             chrN=chrom[i]
             out=TF_RE_binding_chr(adata_RNA,adata_ATAC,GRNdir,chrN,genome,outdir)
-            out.to_csv(outdir+chrN+'_cell_population_TF_RE_binding.txt',sep='\t')  
-        #result=pd.concat([result,out],axis=1).fillna(0)
-            result = pd.concat([result, out], join='outer', axis=0)
+            out.to_csv(outdir+chrN+'_cell_population_TF_RE_binding.txt',sep='\t')
+            results.append(out)
     if method=='LINGER':
         result=pd.DataFrame()
         for i in tqdm(range(23)):
@@ -380,8 +411,9 @@ def TF_RE_binding(GRNdir,adata_RNA,adata_ATAC,genome,method,outdir):
             TG=pd.DataFrame(adata_RNA.X.toarray().T,index=adata_RNA.var['gene_ids'].values,columns=adata_RNA.obs['barcode'].values)
             TFoverlap = list(set(TFs) & set(TG.index))
             mat = mat[TFoverlap]
-            mat.to_csv(outdir+chrN+'_cell_population_TF_RE_binding.txt',sep='\t')  
-            result = pd.concat([result, mat], join='outer', axis=0)
+            mat.to_csv(outdir+chrN+'_cell_population_TF_RE_binding.txt',sep='\t')
+            results.append(mat)
+
     if method=='scNN':
         Exp,Opn,Target,RE_TGlink=load_data_scNN(GRNdir,genome)
         RE_TGlink=pd.read_csv(outdir+'RE_TGlink.txt',sep='\t',header=0)
@@ -391,25 +423,26 @@ def TF_RE_binding(GRNdir,adata_RNA,adata_ATAC,genome,method,outdir):
         REName=Opn.index
         geneName=Target.index
         TFName=Exp.index
-        result_all=pd.DataFrame([])
         for jj in tqdm(range(0,len(chrlist))):
             chrtemp=chrlist[jj]
             RE_TGlink1=RE_TGlink[RE_TGlink['chr']==chrtemp]
             net_all=torch.load(outdir+chrtemp+'_net.pt')
-            result=TF_RE_scNN(TFName,geneName,net_all,RE_TGlink1,REName)
-            result.to_csv(outdir+chrtemp+'_cell_population_TF_RE_binding.txt',sep='\t')
-            result_all=pd.concat([result_all,result],axis=0)
-        result=result_all.copy()
-    result.to_csv(outdir+'cell_population_TF_RE_binding.txt',sep='\t')   
-        
+            result_scnn=TF_RE_scNN(TFName,geneName,net_all,RE_TGlink1,REName, torch_cosine=torch_cosine)
+            result_scnn.to_csv(outdir+chrtemp+'_cell_population_TF_RE_binding.txt',sep='\t')
+            results.append(result_scnn)
+
+        # result=result_all.copy()
+    result = pd.concat(results, join="outer", axis=0)
+    result.to_csv(outdir+'cell_population_TF_RE_binding.txt',sep='\t')
+
 def load_TFbinding_scNN(GRNdir,outdir,genome):
-    import pandas as pd
     import numpy as np
+    import pandas as pd
     genome_map=pd.read_csv(GRNdir+'genome_map_homer.txt',sep='\t',header=0)
-    genome_map.index=genome_map['genome_short'].values 
-    A=pd.read_csv(outdir+'MotifTarget.bed',sep='\t',header=0,index_col=None)     
+    genome_map.index=genome_map['genome_short'].values
+    A=pd.read_csv(outdir+'MotifTarget.bed',sep='\t',header=0,index_col=None)
             #Motif_binding,REs1,motifs=list2mat(A,'PositionID','Motif Name','MotifScore')
-    A['MotifScore']=np.log(1+A['MotifScore']); 
+    A['MotifScore']=np.log(1+A['MotifScore']);
     if genome in genome_map.index:
         Match2=pd.read_csv(GRNdir+'Match_TF_motif_'+genome_map.loc[genome]['species_ensembl']+'.txt',sep='\t',header=0)
     else:
@@ -446,7 +479,7 @@ def cell_type_specific_TF_RE_binding_chr(adata_RNA,adata_ATAC,GRNdir,chrN,genome
         if len(other_RE)>0:
             B_arr = pd.DataFrame(np.zeros((len(other_RE), mat.shape[1])), columns=mat.columns, index=other_RE)
             mat = pd.concat([mat, B_arr])
-        mat = mat.loc[N_overlap]    
+        mat = mat.loc[N_overlap]
     if method=='baseline':
         mat=load_TF_RE(GRNdir,chrN,O_overlap,O_overlap_u,O_overlap_hg19_u)
         mat.index=N_overlap
@@ -495,32 +528,35 @@ def cell_type_specific_TF_RE_binding(GRNdir,adata_RNA,adata_ATAC,genome,celltype
     label=adata_RNA.obs['label'].values.tolist()
     labelset=list(set(label))
     if (celltype == 'all')&(method!='scNN'):
+        results = []
         for label0 in labelset:
-            print('Generate cell type specitic TF binding potential for cell type '+ str(label0)+'...')
+            print('Generating cell type specitic TF binding potential for cell type '+ str(label0)+'...')
             result=pd.DataFrame()
             from tqdm import tqdm
             for i in tqdm(range(22)):
                 chrN='chr'+str(i+1)
                 mat=pd.read_csv(outdir+chrN+'_cell_population_TF_RE_binding.txt',sep='\t',index_col=0,header=0)
                 out=cell_type_specific_TF_RE_binding_chr(adata_RNA,adata_ATAC,GRNdir,chrN,genome,label0,outdir,method,mat)
-        #result=pd.concat([result,out],axis=1).fillna(0)
-                result = pd.concat([result, out], join='outer', axis=0)
+
+                results.append(out)
             chrN='chrX'
             mat=pd.read_csv(outdir+chrN+'_cell_population_TF_RE_binding.txt',sep='\t',index_col=0,header=0)
             out=cell_type_specific_TF_RE_binding_chr(adata_RNA,adata_ATAC,GRNdir,chrN,genome,label0,outdir,method,mat)
-            result = pd.concat([result, out], join='outer', axis=0).fillna(0)
+            results.append(out)
+            result = pd.concat(results, join='outer', axis=0).fillna(0)
             result.to_csv(outdir+'cell_type_specific_TF_RE_binding_'+str(label0)+'.txt', sep='\t')
     elif method!='scNN':
         result=pd.DataFrame()
         from tqdm import tqdm
         chrom=['chr'+str(i+1) for i in range(22)]
         chrom.append('chrX')
+        results = []
         for i in tqdm(range(23)):
             chrN=chrom[i]
             mat=pd.read_csv(outdir+chrN+'_cell_population_TF_RE_binding.txt',sep='\t',index_col=0,header=0)
             out=cell_type_specific_TF_RE_binding_chr(adata_RNA,adata_ATAC,GRNdir,chrN,genome,celltype,outdir,method,mat)
-        #result=pd.concat([result,out],axis=1).fillna(0)
-            result = pd.concat([result, out], join='outer', axis=0)
+            result = results.append(out)
+        result = pd.concat(results, axis = 1).fillna(0)
         result.to_csv(outdir+'cell_type_specific_TF_RE_binding_'+str(celltype)+'.txt', sep='\t')
     elif (celltype == 'all')&(method=='scNN'):
         A=pd.read_csv(outdir+'cell_population_TF_RE_binding.txt',sep='\t',header=0,index_col=0)
@@ -541,7 +577,7 @@ def cell_type_specific_TF_RE_binding(GRNdir,adata_RNA,adata_ATAC,genome,celltype
         TFbinding1 = pd.DataFrame(TFbinding1,index=mat.index,columns=TFoverlap)
         TFbinding=TFbinding1.copy()
         for label0 in labelset:
-            print('Generate cell type specitic TF binding potential for cell type '+ str(label0)+'...')
+            print('Generating cell type specitic TF binding potential for cell type '+ str(label0)+'...')
             from tqdm import tqdm
             temp=adata_ATAC.X[np.array(label)==label0,:].mean(axis=0).T
             RE=pd.DataFrame(temp,index=adata_ATAC.var['gene_ids'].values,columns=['values'])
@@ -568,7 +604,7 @@ def cell_type_specific_TF_RE_binding(GRNdir,adata_RNA,adata_ATAC,genome,celltype
         REidx=pd.DataFrame(range(mat.shape[0]),index=mat.index)
         TFbinding1[REidx.loc[TFbinding.index][0].values,:]=TFbinding.values
         TFbinding1 = pd.DataFrame(TFbinding1,index=mat.index,columns=TFoverlap)
-        print('Generate cell type specitic TF binding potential for cell type '+ str(label0)+'...')
+        print('Generating cell type specitic TF binding potential for cell type '+ str(label0)+'...')
         temp=adata_ATAC.X[np.array(label)==label0,:].mean(axis=0).T
         RE=pd.DataFrame(temp,index=adata_ATAC.var['gene_ids'].values,columns=['values'])
         temp=adata_RNA.X[np.array(label)==label0,:].mean(axis=0).T
@@ -576,13 +612,14 @@ def cell_type_specific_TF_RE_binding(GRNdir,adata_RNA,adata_ATAC,genome,celltype
         RE=RE.loc[REs]
         result=cell_type_specific_TF_RE_binding_score_scNN(mat,TFbinding,RE,TG,TFoverlap)
         result.to_csv(outdir+'cell_type_specific_TF_RE_binding_'+str(label0)+'.txt', sep='\t')
-    
+
 
 def load_shap(chr,outdir):
-    import torch
-    import pandas as pd
-    import numpy as np
     import csv
+
+    import numpy as np
+    import pandas as pd
+    import torch
     #print('loading shapley value '+chr+' ...')
     shap_all=torch.load(outdir+"shap_"+chr+".pt")
     import pandas as pd
@@ -631,7 +668,7 @@ def cis_shap(chr,outdir):
             if (REidxtemp[0]=='') :
                 REidxtemp=[]
             else:
-                REidxtemp=[int(REidxtemp[i]) for i in range(len(REidxtemp))] 
+                REidxtemp=[int(REidxtemp[i]) for i in range(len(REidxtemp))]
             if len(REidxtemp)>0:
                 REName_temp=REName[np.array(REidxtemp)]
                 for k in range(len(REidxtemp)):
@@ -674,8 +711,8 @@ def trans_shap(chr,outdir):
     mat=pd.DataFrame(mat,index=TGs,columns=TFs)
     mat.fillna(0, inplace=True)
     return mat
-      
-def load_RE_TG(GRNdir,chrN,O_overlap_u,O_overlap_hg19_u,O_overlap):   
+
+def load_RE_TG(GRNdir,chrN,O_overlap_u,O_overlap_hg19_u,O_overlap):
     #print('load prior RE-TG ...')
     from scipy.sparse import coo_matrix
     primary_s=pd.read_csv(GRNdir+'Primary_RE_TG_'+chrN+'.txt',sep='\t')
@@ -740,11 +777,11 @@ def load_RE_TG_distance(GRNdir,chrN,O_overlap_hg19_u,O_overlap_u,O_overlap,TGove
     return array
 
 
-def load_RE_TG_scNN(outdir):   
+def load_RE_TG_scNN(outdir):
     #print('load prior RE-TG ...')
-    from scipy.sparse import coo_matrix
-    import pandas as pd
     import numpy as np
+    import pandas as pd
+    from scipy.sparse import coo_matrix
     dis=pd.read_csv('data/RE_gene_distance.txt',sep='\t',header=0)
     dis['distance']=np.exp(-(0.5+dis['distance']/25000))
     REs=dis['RE'].unique()
@@ -761,11 +798,10 @@ def load_RE_TG_scNN(outdir):
     distance,REs,TGs=list2mat_s(dis,REoverlap,TGoverlap,'RE','gene','distance')
     return distance,cisGRN,REoverlap,TGoverlap
 
-def cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,outdir):  
+def cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,outdir):
     import numpy as np
     import pandas as pd
-    from scipy.sparse import csc_matrix
-    from scipy.sparse import coo_matrix
+    from scipy.sparse import coo_matrix, csc_matrix
     O_overlap, N_overlap,O_overlap_u,N_overlap_u,O_overlap_hg19_u=load_region(GRNdir,genome,chrN,outdir)
     sparse_S,TGset=load_RE_TG(GRNdir,chrN,O_overlap_u,O_overlap_hg19_u,O_overlap)
     RE=pd.DataFrame(adata_ATAC.X.toarray().T,index=adata_ATAC.var['gene_ids'].values,columns=adata_ATAC.obs['barcode'].values)
@@ -788,10 +824,10 @@ def cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,outdir):
     Score=np.multiply(sparse_S.values,sparse_dis.values)
     Score=pd.DataFrame(Score,index=N_overlap,columns=TGoverlap)
     Score=Score.groupby(Score.index).max()
-    data = Score.values[Score.values!=0] 
-    rows, cols = np.nonzero(Score.values) 
+    data = Score.values[Score.values!=0]
+    rows, cols = np.nonzero(Score.values)
     coo = coo_matrix((data,(rows,cols)),shape=Score.shape)
-    combined = np.zeros([len(data),3], dtype=object) 
+    combined = np.zeros([len(data),3], dtype=object)
     combined[:,0]=Score.index[coo.row]
     combined[:,1]=np.array(TGoverlap)[coo.col]
     combined[:,2]=coo.data
@@ -828,23 +864,25 @@ def cis_shap_scNN(chrtemp,outdir,RE_TGlink1,REName,TFName):
     return RE_TG
 
 
-def cis_reg(GRNdir,adata_RNA,adata_ATAC,genome,method,outdir): 
+def cis_reg(GRNdir,adata_RNA,adata_ATAC,genome,method,outdir):
     from tqdm import tqdm
     chrom=['chr'+str(i+1) for i in range(22)]
     chrom.append('chrX')
+    results = []
+    # every if statement is independent since method can only be one value
     if method=='baseline':
-        result=pd.DataFrame([])
+        # result=pd.DataFrame([])
         for i in tqdm(range(23)):
             chrN=chrom[i]
             temp=cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,outdir)
             temp.columns=['RE','TG','Score']
-            result=pd.concat([result,temp],axis=0,join='outer')
+            results.append(temp)
     if method=='LINGER':
-        result=pd.DataFrame([])
+        # result=pd.DataFrame([])
         for i in tqdm(range(23)):
             chrN=chrom[i]
             temp=cis_shap(chrN,outdir)
-            result=pd.concat([result,temp],axis=0,join='outer')
+            results.append(temp)
     if method=='scNN':
         Exp,Opn,Target,RE_TGlink=load_data_scNN(GRNdir,genome)
         RE_TGlink=pd.read_csv(outdir+'RE_TGlink.txt',sep='\t',header=0)
@@ -859,15 +897,15 @@ def cis_reg(GRNdir,adata_RNA,adata_ATAC,genome,method,outdir):
             chrN=chrlist[i]
             RE_TGlink1=RE_TGlink[RE_TGlink['chr']==chrN]
             temp=cis_shap_scNN(chrN,outdir,RE_TGlink1,REName,TFName)
-            result=pd.concat([result,temp],axis=0,join='outer')
+            results.append(temp)
+    result = pd.concat(results, axis=0, join="outer")
     result.to_csv(outdir+'cell_population_cis_regulatory.txt',sep='\t',header=None,index=None)
 
 
-def cell_type_specific_cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,celltype,outdir): 
+def cell_type_specific_cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,celltype,outdir):
     import numpy as np
     import pandas as pd
-    from scipy.sparse import csc_matrix
-    from scipy.sparse import coo_matrix
+    from scipy.sparse import coo_matrix, csc_matrix
     O_overlap, N_overlap,O_overlap_u,N_overlap_u,O_overlap_hg19_u=load_region(GRNdir,genome,chrN,outdir)
     sparse_S,TGset=load_RE_TG(GRNdir,chrN,O_overlap_u,O_overlap_hg19_u,O_overlap)
     label=adata_RNA.obs['label'].values.tolist()
@@ -895,20 +933,19 @@ def cell_type_specific_cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,cellt
     Score=csc_matrix(RE_temp).multiply(sparse_S.values).multiply(sparse_dis.values).multiply(csc_matrix(TG_temp.T)).toarray()
     Score=pd.DataFrame(Score,index=N_overlap,columns=TGoverlap)
     Score=Score.groupby(Score.index).max()
-    data = Score.values[Score.values!=0] 
-    rows, cols = np.nonzero(Score.values) 
+    data = Score.values[Score.values!=0]
+    rows, cols = np.nonzero(Score.values)
     coo = coo_matrix((data,(rows,cols)),shape=Score.shape)
-    combined = np.zeros([len(data),3], dtype=object) 
+    combined = np.zeros([len(data),3], dtype=object)
     combined[:,0]=Score.index[coo.row]
     combined[:,1]=np.array(TGoverlap)[coo.col]
     combined[:,2]=coo.data
     resultall=pd.DataFrame(combined)
-    return resultall  
+    return resultall
 def cell_type_specific_cis_reg_scNN(distance,cisGRN,RE,TG,REs,TGs):
     import numpy as np
     import pandas as pd
-    from scipy.sparse import csr_matrix
-    from scipy.sparse import coo_matrix
+    from scipy.sparse import coo_matrix, csr_matrix
     RE=RE.loc[REs]
     ## select the genes
     #target_col_indices = [col_dict[col] for col in TGoverlap]
@@ -923,16 +960,16 @@ def cell_type_specific_cis_reg_scNN(distance,cisGRN,RE,TG,REs,TGs):
     row_indices=np.array(REs)[row_indices]
     col_indices = np.array(TGs)[col_indices]
     values = Score.data
-    combined = np.zeros([len(row_indices),3], dtype=object) 
+    combined = np.zeros([len(row_indices),3], dtype=object)
     combined[:,0]=row_indices
     combined[:,1]=col_indices
     combined[:,2]=values
     resultall=pd.DataFrame(combined)
-    return resultall 
+    return resultall
 
-def cell_type_specific_cis_reg(GRNdir,adata_RNA,adata_ATAC,genome,celltype,outdir,method): 
-    import pandas as pd
+def cell_type_specific_cis_reg(GRNdir,adata_RNA,adata_ATAC,genome,celltype,outdir,method):
     import numpy as np
+    import pandas as pd
     label=adata_RNA.obs['label'].values.tolist()
     labelset=list(set(label))
     chrom=['chr'+str(i+1) for i in range(22)]
@@ -942,23 +979,27 @@ def cell_type_specific_cis_reg(GRNdir,adata_RNA,adata_ATAC,genome,celltype,outdi
         for label0 in labelset:
             label0=str(label0)
             result=pd.DataFrame([])
+            results = []
             for i in tqdm(range(23)):
                 chrN=chrom[i]
                 temp=cell_type_specific_cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,label0,outdir)
-                result=pd.concat([result,temp],axis=0,join='outer')
+                results.append(temp)
             chrN='chrX'
             temp=cell_type_specific_cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,label0,outdir)
-            result=pd.concat([result,temp],axis=0,join='outer')
+            results.append(temp)
+            result=pd.concat(results,axis=0,join='outer')
             result.to_csv(outdir+'cell_type_specific_cis_regulatory_'+str(label0)+'.txt',sep='\t',header=None,index=None)
     elif (method!='scNN'):
             result=pd.DataFrame([])
+            results = []
             for i in tqdm(range(23)):
                 chrN=chrom[i]
                 temp=cell_type_specific_cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,celltype,outdir)
-                result=pd.concat([result,temp],axis=0,join='outer')
+                results.append(temp)
             chrN='chrX'
             temp=cell_type_specific_cis_reg_chr(GRNdir,adata_RNA,adata_ATAC,genome,chrN,celltype,outdir)
-            result=pd.concat([result,temp],axis=0,join='outer')
+            results.append(temp)
+            result=pd.concat(results,axis=0,join='outer')
             result.to_csv(outdir+'cell_type_specific_cis_regulatory_'+celltype+'.txt',sep='\t',header=None,index=None)
     elif (celltype=='all')&(method=='scNN'):
         distance,cisGRN,REs,TGs=load_RE_TG_scNN(outdir)
@@ -969,10 +1010,10 @@ def cell_type_specific_cis_reg(GRNdir,adata_RNA,adata_ATAC,genome,celltype,outdi
             temp=adata_RNA.X[np.array(label)==label0,:].mean(axis=0).T
             TG=pd.DataFrame(temp,index=adata_RNA.var['gene_ids'].values,columns=['values'])
             del temp
-            
+
             result=cell_type_specific_cis_reg_scNN(distance,cisGRN,RE,TG,REs,TGs)
             result.to_csv(outdir+'cell_type_specific_cis_regulatory_'+label0+'.txt',sep='\t',header=None,index=None)
-    else: 
+    else:
         label0=celltype
         label0=str(label0)
         temp=adata_ATAC.X[np.array(label)==label0,:].mean(axis=0).T
@@ -982,7 +1023,7 @@ def cell_type_specific_cis_reg(GRNdir,adata_RNA,adata_ATAC,genome,celltype,outdi
         del temp
         result=cell_type_specific_cis_reg_scNN(distance,cisGRN,RE,TG,REs,TGs)
         result.to_csv(outdir+'cell_type_specific_cis_regulatory_'+label0+'.txt',sep='\t',header=None,index=None)
-            
+
 def trans_shap_scNN(chrtemp,outdir,RE_TGlink1,REName,TFName):
     import ast
     TG_1=[]
@@ -1017,9 +1058,9 @@ def trans_shap_scNN(chrtemp,outdir,RE_TGlink1,REName,TFName):
 
 
 def load_cis(Binding,celltype,outdir):
-    from scipy.sparse import coo_matrix
-    import pandas as pd
     import numpy as np
+    import pandas as pd
+    from scipy.sparse import coo_matrix
     if celltype=='':
         cis=pd.read_csv(outdir+'cell_population_cis_regulatory.txt',sep='\t',header=None)
     else:
@@ -1051,7 +1092,7 @@ def load_TF_TG( GRNdir, TFset,TGset):
     a=list(range(1,23))
     a.append('X')
     for i in a:
-        chrN='chr'+str(i)     
+        chrN='chr'+str(i)
         TF_TG = pd.read_csv(GRNdir+'Primary_TF_TG_'+chrN+'.txt',sep='\t')
         TF_TG = TF_TG[TF_TG['TF'].isin(TFset)]
         TF_TG = TF_TG[TF_TG['TG'].isin(TGset)]
@@ -1074,13 +1115,11 @@ def load_TF_TG( GRNdir, TFset,TGset):
 
 def trans_reg(GRNdir,method,outdir,genome):
     import ast
-    import pandas as pd
-    from scipy.sparse import coo_matrix
+
     import numpy as np
     import pandas as pd
-    from scipy.sparse import csc_matrix
-    from scipy.sparse import coo_matrix
-    print('Generate trans-regulatory netowrk ...')
+    from scipy.sparse import coo_matrix, csc_matrix
+    print('Generating trans-regulatory netowrk ...')
     if method=='baseline':
         Binding=pd.read_csv(outdir+'cell_population_TF_RE_binding.txt',sep='\t',index_col=0)
         cis=load_cis(Binding,'',outdir)
@@ -1093,10 +1132,13 @@ def trans_reg(GRNdir,method,outdir,genome):
         chrom=['chr'+str(i+1) for i in range(22)]
         chrom.append('chrX')
         S=pd.DataFrame([])
+        results = []
         for i in tqdm(range(23)):
             chrN=chrom[i]
             temp=trans_shap(chrN,outdir)
-            S=pd.concat([S,temp],axis=0,join='outer')
+            results.append(temp)
+
+        S = pd.concat(results, axis = 0, join="outer")
     elif method=='scNN':
         Exp,Opn,Target,RE_TGlink=load_data_scNN(GRNdir,genome)
         RE_TGlink=pd.read_csv(outdir+'RE_TGlink.txt',sep='\t',header=0)
@@ -1106,21 +1148,22 @@ def trans_reg(GRNdir,method,outdir,genome):
         REName=Opn.index
         geneName=Target.index
         TFName=Exp.index
-        result=pd.DataFrame([])
         S=pd.DataFrame([])
+        results = []
         for i in tqdm(range(len(chrlist))):
             chrN=chrlist[i]
             RE_TGlink1=RE_TGlink[RE_TGlink['chr']==chrN]
             temp=trans_shap_scNN(chrN,outdir,RE_TGlink1,REName,TFName)
-            S=pd.concat([S,temp],axis=0,join='outer')
-    print('Save trans-regulatory netowrk ...')
+            results.append(temp)
+
+        S=pd.concat(results,axis=0,join='outer')
+    print('Saving trans-regulatory netowrk ...')
     S.to_csv(outdir+'cell_population_trans_regulatory.txt',sep='\t')
 
 def cell_type_specific_trans_reg(GRNdir,adata_RNA,celltype,outdir):
-    import pandas as pd
     import numpy as np
-    from scipy.sparse import csc_matrix
-    from scipy.sparse import coo_matrix
+    import pandas as pd
+    from scipy.sparse import coo_matrix, csc_matrix
     label=adata_RNA.obs['label'].values.tolist()
     labelset=list(set(label))
     if celltype=='all':
