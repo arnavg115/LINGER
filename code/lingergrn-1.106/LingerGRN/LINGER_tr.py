@@ -260,13 +260,15 @@ def get_TSS(GRNdir, genome, TSS_dis):
 
 def load_data(GRNdir, outdir):
     gene_all = pd.DataFrame([])
+    gene_all_res = []
     for i in range(22):
         chr = "chr" + str(i + 1)
         gene_file = GRNdir + chr + "_gene.txt"
         data0 = pd.read_csv(gene_file, sep="\t", header=None)
         data0["chr"] = chr
         data0["id_b"] = data0.index + 1
-        gene_all = pd.concat([gene_all, data0])
+        gene_all_res.append(data0)
+    gene_all = pd.concat(gene_all_res)
     chr = "chrX"
     gene_file = GRNdir + chr + "_gene.txt"
     data0 = pd.read_csv(gene_file, sep="\t", header=None)

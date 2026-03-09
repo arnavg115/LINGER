@@ -314,6 +314,7 @@ def driver_score(expression, aud_idx, GRN, outdir, adjust_method, corr_method):
     )
     E = E + E.mean().mean() * 10 ** (-1)
     expression = expression / E
+    c_res,p_res, q_res = [],[],[]
     for i in range(len(allcelltype)):
         print("cell type " + allcelltype[i])
         aud_idx1 = aud_idx.reset_index()
@@ -333,14 +334,21 @@ def driver_score(expression, aud_idx, GRN, outdir, adjust_method, corr_method):
         print(np.isnan(FC).sum())
         c, cp = correlation_FC(np.log(FC[0]).values, reg, corr_method)
         # idx=pd.DataFrame(range(expression.shape[0]),index=expression.index)
-        C_result = pd.concat([C_result, c], axis=1)
-        P_result = pd.concat([P_result, cp], axis=1)
+        c_res.append(c)
+        p_res.append[cp]
+        # C_result = pd.concat([C_result, c], axis=1)
+        # P_result = pd.concat([P_result, cp], axis=1)
         cp = cp.fillna(1)
         adjusted_p_values = pd.DataFrame(
             multipletests(cp[0].values, method=adjust_method)[1], index=c.index
         )
         # print(adjusted_p_values)
-        Q_result = pd.concat([Q_result, adjusted_p_values], axis=1)
+        q_res.append(adjusted_p_values)
+        # Q_result = pd.concat([Q_result, adjusted_p_values], axis=1)
+    C_result = pd.concat(c_res, axis = 1)
+    P_result = pd.concat(p_res, axis = 1)
+    Q_result = pd.concat(q_res, axis = 1)
+
     C_result.columns = allcelltype
     P_result.columns = allcelltype
     Q_result.columns = allcelltype
