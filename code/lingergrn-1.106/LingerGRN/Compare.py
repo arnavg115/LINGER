@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy import stats
+import matplotlib.pyplot as plt
 
 
 def assignLabel(W, p):
@@ -16,9 +17,6 @@ def assignLabel(W, p):
         S_gene[(max_values > quantile) & (max_indices == i)] = i + 1
     return S_gene, W2
 
-
-import matplotlib.pyplot as plt
-import numpy as np
 
 
 def qq_pval(p1, names, celltype):
@@ -48,8 +46,6 @@ def qq_pval(p1, names, celltype):
 
 class Module_obj:
     def __init__(self):
-        import numpy as np
-        import pandas as pd
 
         self.S_TG = pd.DataFrame()  # Initialize A.x as an empty DataFrame
         self.pvalue_all = pd.DataFrame()  # Initialize A.y as an empty list
@@ -62,25 +58,24 @@ def diff_Module(Exp_TG, metadata, S_TG, K):
     celltype = metadata["celltype"].unique().tolist()
     pvalue_all = np.zeros((K, len(celltype)))
     tvalue_all = np.zeros((K, len(celltype)))
-    from scipy import stats
     from statsmodels.stats.multitest import multipletests
-
-    for k in range(len(celltype)):
-        temp = Exp_TG.iloc[:, metadata["celltype"].values == celltype[k]]
-        aud_idxtemp = metadata[(metadata["celltype"].values == celltype[k])][
-            "group"
-        ].values
+    from scipy.stats import ttest_ind
+    # compute masks ahead of time
+    celltype_masks = {ct: metadata["celltype"].values == ct for ct in celltype}
+    # access group values once
+    group_values = metadata['group'].values
+    for k, ct in enumerate(celltype):
+        mask = celltype_masks[ct]
+        temp = Exp_TG.iloc[:, mask]
+        aud_idxtemp = group_values[mask]
         Exp_mean = stats.zscore(temp.T).T.groupby(S_TG["Module"].values).mean()
         Exp_mean = Exp_mean.loc[range(1, K + 1)]
         X = Exp_mean.values[:, (aud_idxtemp == 1)]
         Y = Exp_mean.values[:, (aud_idxtemp == 0)]
-        p_values = np.zeros((K,))
-        t_values = np.zeros((K,))
-        from scipy.stats import ttest_ind
 
-        for i in range(K):
-            t_values[i], p_values[i] = ttest_ind(X[i], Y[i])
-        # p_values = np.nan_to_num(p_values, nan=1)
+        # utilize vectorized ttest which is faster than the iterative variant
+        p_values, t_values = ttest_ind(X, Y, axis = 1)
+
         pvalue_all[:, k] = p_values
         tvalue_all[:, k] = t_values
 
@@ -130,8 +125,6 @@ def GWAS_Module_enrich(S_TG, TGset, GWASgene, K):
 
 
 def Module_trans(outdir, metadata, TG_pseudobulk, K, GWASfile=None):
-    import numpy as np
-    from scipy import stats
 
     print("loading GRN......")
     trans_reg = pd.read_csv(
@@ -222,9 +215,6 @@ def remove_covariate(TG_pseudobulk, aud_idx, celltype):
     return Exp_norm
 
 
-import numpy as np
-import pandas as pd
-
 
 def runWGCNA(celltypetemp, TG_pseudobulk_all, metadata):
     metadata_temp = metadata[metadata["celltype"].isin([celltypetemp])]
@@ -259,7 +249,6 @@ def runWGCNA(celltypetemp, TG_pseudobulk_all, metadata):
 
 
 def correlation_FC(x, y, method):
-    import numpy as np
     from scipy import stats
 
     # Loop through each column of y and calculate correlation with x
@@ -279,7 +268,6 @@ def correlation_FC(x, y, method):
 
 def driver_score(expression, aud_idx, GRN, outdir, adjust_method, corr_method):
     print("loading GRN......")
-    import numpy as np
     from statsmodels.stats.multitest import multipletests
 
     allcelltype = aud_idx["celltype"].unique()
@@ -356,7 +344,6 @@ def driver_score(expression, aud_idx, GRN, outdir, adjust_method, corr_method):
 
 
 def driver_result(C_result, Q_result, K):
-    import pandas as pd
 
     # Create a sample DataFrame of size 100x7
     # Rank all values in the DataFrame
